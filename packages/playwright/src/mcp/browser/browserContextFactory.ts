@@ -23,7 +23,7 @@ import * as playwright from 'playwright-core';
 import { registryDirectory } from 'playwright-core/lib/server/registry/index';
 import { startTraceViewerServer } from 'playwright-core/lib/server';
 import { logUnhandledError, testDebug } from '../log';
-import { outputFile, tmpDir } from './config';
+import { outputDir, outputFile } from './config';
 import { firstRootPath } from '../sdk/server';
 
 import type { FullConfig } from './config';
@@ -53,7 +53,7 @@ export interface BrowserContextFactory {
 
 export function identityBrowserContextFactory(browserContext: playwright.BrowserContext): BrowserContextFactory {
   return {
-    createContext: async (clientInfo: ClientInfo, abortSignal: AbortSignal, toolName: string | undefined) => {
+    createContext: async (_clientInfo: ClientInfo, _abortSignal: AbortSignal, _toolName: string | undefined) => {
       return {
         browserContext,
         close: async () => {}
@@ -66,6 +66,7 @@ class BaseContextFactory implements BrowserContextFactory {
   readonly config: FullConfig;
   private _logName: string;
   protected _browserPromise: Promise<playwright.Browser> | undefined;
+  protected _clientInfo: ClientInfo | undefined;
 
   constructor(name: string, config: FullConfig) {
     this._logName = name;
@@ -87,22 +88,30 @@ class BaseContextFactory implements BrowserContextFactory {
     return this._browserPromise;
   }
 
-  protected async _doObtainBrowser(clientInfo: ClientInfo): Promise<playwright.Browser> {
+  protected async _doObtainBrowser(_clientInfo: ClientInfo): Promise<playwright.Browser> {
     throw new Error('Not implemented');
   }
 
   async createContext(clientInfo: ClientInfo): Promise<BrowserContextFactoryResult> {
     testDebug(`create browser context (${this._logName})`);
     const browser = await this._obtainBrowser(clientInfo);
-    const browserContext = await this._doCreateContext(browser);
-    await addInitScript(browserContext, this.config.browser.initScript);
-    return {
-      browserContext,
-      close: (afterClose: () => Promise<void>) => this._closeBrowserContext(browserContext, browser, afterClose)
-    };
+
+    // Temporarily store clientInfo so subclasses can compute per-session output directory
+    // (e.g. for video) without changing the base class method signature.
+    this._clientInfo = clientInfo;
+    try {
+      const browserContext = await this._doCreateContext(browser);
+      await addInitScript(browserContext, this.config.browser.initScript);
+      return {
+        browserContext,
+        close: (afterClose: () => Promise<void>) => this._closeBrowserContext(browserContext, browser, afterClose)
+      };
+    } finally {
+      this._clientInfo = undefined;
+    }
   }
 
-  protected async _doCreateContext(browser: playwright.Browser): Promise<playwright.BrowserContext> {
+  protected async _doCreateContext(_browser: playwright.Browser): Promise<playwright.BrowserContext> {
     throw new Error('Not implemented');
   }
 
@@ -143,7 +152,7 @@ class IsolatedContextFactory extends BaseContextFactory {
   }
 
   protected override async _doCreateContext(browser: playwright.Browser): Promise<playwright.BrowserContext> {
-    return browser.newContext(browserContextOptionsFromConfig(this.config));
+    return browser.newContext(browserContextOptionsFromConfig(this.config, this._clientInfo!));
   }
 }
 
@@ -206,7 +215,7 @@ class PersistentContextFactory implements BrowserContextFactory {
       const launchOptions: LaunchOptions & BrowserContextOptions = {
         tracesDir,
         ...this.config.browser.launchOptions,
-        ...browserContextOptionsFromConfig(this.config),
+        ...browserContextOptionsFromConfig(this.config, clientInfo),
         handleSIGINT: false,
         handleSIGTERM: false,
         ignoreDefaultArgs: [
@@ -346,11 +355,11 @@ async function computeTracesDir(config: FullConfig, clientInfo: ClientInfo): Pro
   return await outputFile(config, clientInfo, `traces`, { origin: 'code', reason: 'Collecting trace' });
 }
 
-function browserContextOptionsFromConfig(config: FullConfig): playwright.BrowserContextOptions {
+function browserContextOptionsFromConfig(config: FullConfig, clientInfo: ClientInfo): playwright.BrowserContextOptions {
   const result = { ...config.browser.contextOptions };
   if (config.saveVideo) {
     result.recordVideo = {
-      dir: tmpDir(),
+      dir: outputDir(config, clientInfo),
       size: config.saveVideo,
     };
   }

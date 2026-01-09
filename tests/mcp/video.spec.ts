@@ -17,6 +17,7 @@
 import fs from 'fs';
 import { test, expect } from './fixtures';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import path from 'path';
 
 for (const mode of ['isolated', 'persistent']) {
   test(`should work with --save-video (${mode})`, async ({ startClient, server }, testInfo) => {
@@ -33,12 +34,16 @@ for (const mode of ['isolated', 'persistent']) {
     await navigateToTestPage(client, server);
     await expect(async () => {
       await produceFrames(client);
-      await checkIntermediateVideoFileExists();
+      await checkIntermediateVideoFileExists(outputDir);
     }).toPass();
     await closeBrowser(client);
 
-    const [file] = await fs.promises.readdir(outputDir);
-    expect(file).toMatch(/page-.*\.webm/);
+    const sessionDirs = await fs.promises.readdir(outputDir);
+    expect(sessionDirs.length).toBe(1);
+    const sessionId = sessionDirs[0]!;
+    expect(sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    const files = await fs.promises.readdir(path.join(outputDir, sessionId));
+    expect(files.some(file => /page-.*\.webm/.test(file))).toBeTruthy();
   });
 
   test(`should work with  { saveVideo } (${mode})`, async ({ startClient, server }, testInfo) => {
@@ -55,12 +60,16 @@ for (const mode of ['isolated', 'persistent']) {
     await navigateToTestPage(client, server);
     await expect(async () => {
       await produceFrames(client);
-      await checkIntermediateVideoFileExists();
+      await checkIntermediateVideoFileExists(outputDir);
     }).toPass();
     await closeBrowser(client);
 
-    const [file] = await fs.promises.readdir(outputDir);
-    expect(file).toMatch(/page-.*\.webm/);
+    const sessionDirs = await fs.promises.readdir(outputDir);
+    expect(sessionDirs.length).toBe(1);
+    const sessionId = sessionDirs[0]!;
+    expect(sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    const files = await fs.promises.readdir(path.join(outputDir, sessionId));
+    expect(files.some(file => /page-.*\.webm/.test(file))).toBeTruthy();
   });
 
   test(`should work with recordVideo (${mode})`, async ({ startClient, server }, testInfo) => {
@@ -127,7 +136,7 @@ async function produceFrames(client: Client) {
   });
 }
 
-async function checkIntermediateVideoFileExists(videosDir?: string) {
-  const files = await fs.promises.readdir(videosDir ?? test.info().outputPath('tmp', 'playwright-mcp-output'));
-  expect(files[0]).toMatch(/\.webm/);
+async function checkIntermediateVideoFileExists(videosDir: string) {
+  const entries = await fs.promises.readdir(videosDir, { recursive: true });
+  expect(entries.some(e => typeof e === 'string' && e.endsWith('.webm'))).toBeTruthy();
 }
